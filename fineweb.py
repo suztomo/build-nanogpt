@@ -27,16 +27,16 @@ os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
 
 # init the tokenizer
-enc = tiktoken.get_encoding("gpt2")
+enc = tiktoken.get_encoding("o200k_base")
 eot = enc._special_tokens['<|endoftext|>'] # end of text token
 def tokenize(doc):
-    # tokenizes a single document and returns a numpy array of uint16 tokens
+    # tokenizes a single document and returns a numpy array of uint32 tokens
     tokens = [eot] # the special <|endoftext|> token delimits all documents
     tokens.extend(enc.encode_ordinary(doc["text"]))
     tokens_np = np.array(tokens)
-    assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
-    tokens_np_uint16 = tokens_np.astype(np.uint16)
-    return tokens_np_uint16
+    assert (0 <= tokens_np).all() and (tokens_np < 2**32).all(), "token dictionary too large for uint32"
+    tokens_np_uint32 = tokens_np.astype(np.uint32)
+    return tokens_np_uint32
 
 def write_datafile(filename, tokens_np):
     np.save(filename, tokens_np)
@@ -46,7 +46,7 @@ nprocs = max(1, os.cpu_count()//2)
 with mp.Pool(nprocs) as pool:
     shard_index = 0
     # preallocate buffer to hold current shard
-    all_tokens_np = np.empty((shard_size,), dtype=np.uint16)
+    all_tokens_np = np.empty((shard_size,), dtype=np.uint32)
     token_count = 0
     progress_bar = None
     for tokens in pool.imap(tokenize, fw, chunksize=16):
