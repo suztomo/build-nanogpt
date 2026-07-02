@@ -393,7 +393,7 @@ if checkpoint_files:
     latest_checkpoint = os.path.join(log_dir, checkpoint_files[-1])
     if master_process:
         print(f"Resuming training from checkpoint: {latest_checkpoint}")
-    checkpoint = torch.load(latest_checkpoint, map_location=device)
+    checkpoint = torch.load(latest_checkpoint, map_location=device, weights_only=False)
     raw_model.load_state_dict(checkpoint['model'])
     start_step = checkpoint['step'] + 1
     if master_process:
