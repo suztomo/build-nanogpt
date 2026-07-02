@@ -353,7 +353,7 @@ torch.set_float32_matmul_precision('high')
 model = GPT(GPTConfig(vocab_size=200064))
 # model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 model.to(device)
-use_compile = False # torch.compile interferes with HellaSwag eval and Generation. TODO fix
+use_compile = True # torch.compile for faster execution
 if use_compile:
     model = torch.compile(model)
 if ddp:
@@ -384,10 +384,26 @@ optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4,
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, f"log.txt")
-with open(log_file, "w") as f: # open for writing to clear the file
-    pass
 
-for step in range(max_steps):
+# check for existing checkpoints to resume training automatically
+start_step = 0
+checkpoint_files = [f for f in os.listdir(log_dir) if f.startswith("model_") and f.endswith(".pt")]
+if checkpoint_files:
+    checkpoint_files.sort()
+    latest_checkpoint = os.path.join(log_dir, checkpoint_files[-1])
+    if master_process:
+        print(f"Resuming training from checkpoint: {latest_checkpoint}")
+    checkpoint = torch.load(latest_checkpoint, map_location=device)
+    raw_model.load_state_dict(checkpoint['model'])
+    start_step = checkpoint['step'] + 1
+    if master_process:
+        print(f"Resumed from step {checkpoint['step']}, starting at step {start_step}")
+
+if start_step == 0:
+    with open(log_file, "w") as f: # open for writing to clear the file
+        pass
+
+for step in range(start_step, max_steps):
     t0 = time.time()
     last_step = (step == max_steps - 1)
 
@@ -425,7 +441,7 @@ for step in range(max_steps):
                 torch.save(checkpoint, checkpoint_path)
 
     # once in a while evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
+    if step % 250 == 0 or last_step:
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
@@ -439,7 +455,7 @@ for step in range(max_steps):
             # get the logits
             with torch.no_grad():
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits, loss = model(tokens)
+                    logits, loss = raw_model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
             num_correct_norm += int(pred_norm == label)
@@ -458,7 +474,7 @@ for step in range(max_steps):
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
     # once in a while generate from the model (except step 0, which is noise)
-    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    if (step > 0 and step % 250 == 0) or last_step:
         model.eval()
         num_return_sequences = 4
         max_length = 32
@@ -472,7 +488,7 @@ for step in range(max_steps):
             # forward the model to get the logits
             with torch.no_grad():
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits, loss = model(xgen) # (B, T, vocab_size)
+                    logits, loss = raw_model(xgen) # (B, T, vocab_size)
                 # take the logits at the last position
                 logits = logits[:, -1, :] # (B, vocab_size)
                 # get the probabilities
