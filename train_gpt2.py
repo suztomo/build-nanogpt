@@ -121,10 +121,24 @@ class GPT(nn.Module):
             x = block(x)
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
-        logits = self.lm_head(x) # (B, T, vocab_size)
-        loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            # Chunked cross entropy calculation to prevent CUDA OOM with large vocabularies (e.g. 200k)
+            x_flat = x.view(-1, x.size(-1))
+            targets_flat = targets.view(-1)
+            chunk_size = 4096
+            loss = 0.0
+            for i in range(0, x_flat.size(0), chunk_size):
+                x_chunk = x_flat[i : i + chunk_size]
+                targets_chunk = targets_flat[i : i + chunk_size]
+                logits_chunk = self.lm_head(x_chunk)
+                chunk_loss = F.cross_entropy(logits_chunk, targets_chunk, reduction='sum')
+                loss = loss + chunk_loss
+            loss = loss / x_flat.size(0)
+            logits = None
+        else:
+            # Inference / evaluation mode without targets
+            logits = self.lm_head(x)
+            loss = None
         return logits, loss
 
     @classmethod
@@ -322,7 +336,7 @@ if torch.cuda.is_available():
 enc = tiktoken.get_encoding("o200k_base")
 
 total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
-B = 32 # micro batch size
+B = 16 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
